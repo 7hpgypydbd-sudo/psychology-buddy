@@ -1,7 +1,7 @@
 /* Psychology Buddy: a companion for fortnightly psychology sessions.
    Everything is saved on this phone only (localStorage). Optional AI uses the person's own Claude API key. */
 'use strict';
-const BUILD = 1;
+const BUILD = 3;
 const KEY = 'psybuddy.v1';
 
 /* ---------- tag vocab ---------- */
@@ -10,8 +10,8 @@ const MOODS = [
 ];
 const KINDS = ['Thought','Feeling','Incident','Pattern','Question','Win'];
 const TAGS = {
-  feelings: {label:'Feelings', opts:['Anxious','Sad','Angry','Overwhelmed','Frustrated','Lonely','Guilty','Ashamed','Numb','Irritable','Calm','Hopeful','Proud','Grateful']},
-  body:     {label:'Physical symptoms', opts:['Tense','Headache','Tired','Racing heart','Tight chest','Upset stomach','Restless','Shaky','Short of breath','Low energy','Appetite change']},
+  feelings: {label:'Feelings', custom:true, opts:['Anxious','Sad','Angry','Overwhelmed','Frustrated','Lonely','Guilty','Ashamed','Numb','Irritable','Calm','Hopeful','Proud','Grateful']},
+  body:     {label:'Physical symptoms', custom:true, opts:['Tense','Headache','Tired','Racing heart','Tight chest','Upset stomach','Restless','Shaky','Short of breath','Low energy','Appetite change']},
   sleep:    {label:'Sleep', opts:['Slept badly','Slept okay','Slept well','Couldn’t fall asleep','Woke in the night','Overslept','Nightmares']},
   triggers: {label:'Triggers', opts:['Work','Family','Relationship','Friends','Social situation','Health','Money','News / online','Being alone','Conflict','Change','Tiredness'], custom:true},
   people:   {label:'People', opts:[], custom:true}
@@ -21,8 +21,8 @@ const OUTCOMES = ['Helpful','Feel better about it','Need more time','Revisit nex
 /* ---------- state ---------- */
 const DEFAULT_STATE = () => ({
   version:1,
-  settings:{theme:'auto', nextSession:'', intervalDays:14, remindDays:2, apiKey:'', pin:'', faceId:'', backupPass:'', lastBackup:'', driveUrl:'', driveToken:'', lastAuto:'', lastAutoErr:'', dirty:false, customTags:{triggers:[], people:[]}},
-  sessions:[], todos:[], notes:[], prep:null, talkSkip:[]
+  settings:{theme:'auto', nextSession:'', intervalDays:14, remindDays:2, apiKey:'', pin:'', faceId:'', backupPass:'', lastBackup:'', driveUrl:'', driveToken:'', lastAuto:'', lastAutoErr:'', dirty:false, reminders:[], habits:['Walk','Meditation','Exercise'], keyHabit:'Walk', keyHabitNote:'', upcoming:[], hardMonths:[], hardMonthNote:'', customTags:{feelings:[], body:[], triggers:[], people:[]}},
+  sessions:[], todos:[], notes:[], prep:null, talkSkip:[], habitLog:{}
 });
 let S = load();
 function load(){
@@ -59,6 +59,7 @@ function fmtWhen(d){ return fmtDate(d, {weekday:'long', day:'numeric', month:'lo
 function dayLabel(d){ const n = daysUntil(d); if (n===0) return 'Today'; if (n===-1) return 'Yesterday'; return fmtDate(d, {weekday:'long', day:'numeric', month:'long'}); }
 function toLocalInput(d){ const x=new Date(d); x.setMinutes(x.getMinutes()-x.getTimezoneOffset()); return x.toISOString().slice(0,16); }
 function plural(n, w){ return n + ' ' + w + (n===1?'':'s'); }
+function upcomingAfter(d){ return (S.settings.upcoming||[]).map(x=>new Date(x)).filter(x=>x > new Date(d.getTime()+DAY/2)).sort((a,b)=>a-b); }
 function nextSessionDate(){ return S.settings.nextSession ? new Date(S.settings.nextSession) : null; }
 function lastSession(){ return [...S.sessions].sort((a,b)=>b.date.localeCompare(a.date))[0] || null; }
 function openTodos(){ return S.todos.filter(t=>!t.done && !t.archived); }
@@ -104,16 +105,45 @@ function reminderText(){
   return when + (bits.length ? ' · ' + bits.join(', ') : ' · you’re all set');
 }
 function backupDue(){ if (S.settings.driveUrl && !S.settings.lastAutoErr) return false; return (S.notes.length + S.sessions.length) >= 3 && (!S.settings.lastBackup || Date.now()-new Date(S.settings.lastBackup) > 7*DAY); }
+let coachShift = 0;
 function coachLine(){
-  const ls = lastSession(); if (!ls) return null;
+  const ls = lastSession();
   const pool = [];
-  if (ls.coachNote) pool.push(ls.coachNote);
-  (ls.insights||[]).forEach(t=>pool.push(t));
-  S.todos.filter(t=>t.sessionId===ls.id && t.kind==='practice').forEach(t=>pool.push('Remember to practise: ' + t.text));
-  (ls.suggestions||[]).forEach(t=>pool.push(t));
+  if (ls){
+    if (ls.coachNote) pool.push({text:ls.coachNote, from:'session', date:ls.date});
+    (ls.insights||[]).forEach(t=>pool.push({text:t, from:'session', date:ls.date}));
+    S.todos.filter(t=>t.sessionId===ls.id && t.kind==='practice').forEach(t=>pool.push({text:'Remember to practise: ' + t.text, from:'session', date:ls.date}));
+    (ls.practiceList||[]).forEach(t=>pool.push({text:t, from:'session', date:ls.date}));
+  }
+  (S.settings.reminders||[]).forEach(t=>pool.push({text:'\u201c'+t+'\u201d', from:'reminder'}));
   if (!pool.length) return null;
-  const i = Math.floor(Date.now()/ (6*3600e3)) % pool.length; // rotates every 6 hours
-  return {text:pool[i], date:ls.date};
+  const i = (Math.floor(Date.now()/ (6*3600e3)) + coachShift) % pool.length; // rotates every 6 hours, or on tap
+  return pool[i];
+}
+const dayKey = d => toLocalInput(d).slice(0,10);
+function habitsCard(){
+  const hs = S.settings.habits||[]; if (!hs.length) return '';
+  const today = S.habitLog[dayKey(new Date())]||[];
+  const days = [...Array(7)].map((_,i)=>{ const d=new Date(Date.now()-(6-i)*DAY); return {d, k:dayKey(d)}; });
+  const kh = S.settings.keyHabit;
+  let nudge = '';
+  if (kh && hs.includes(kh)){
+    const logged = Object.keys(S.habitLog).filter(k=>(S.habitLog[k]||[]).length).sort();
+    const lastKey = Object.keys(S.habitLog).filter(k=>(S.habitLog[k]||[]).includes(kh)).sort().pop();
+    const since = lastKey ? daysUntil(new Date()) - daysUntil(new Date(lastKey+'T12:00')) : null;
+    const gap = lastKey ? -daysUntil(new Date(lastKey+'T12:00')) : (logged.length && -daysUntil(new Date(logged[0]+'T12:00')));
+    if (gap >= 3) nudge = `<div class="small" style="margin-top:12px;padding:10px 12px;border-radius:12px;background:var(--warmSoft);font-weight:600">No ${esc(kh.toLowerCase())} logged for ${gap} days. ${esc(S.settings.keyHabitNote || 'Even a short one counts.')}</div>`;
+  }
+  return `<div class="card tight"><div class="row" style="margin-bottom:10px"><div class="lbl" style="margin:0">Today I did\u2026</div><span class="small muted" style="font-weight:700">tap to tick</span></div>
+    <div class="chips">${hs.map(h=>`<button class="chip ${today.includes(h)?'on':''}" data-action="habit" data-v="${esc(h)}">${today.includes(h)?'\u2713 ':''}${esc(h)}</button>`).join('')}</div>
+    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-top:14px;text-align:center">${days.map(({d,k})=>{ const n=(S.habitLog[k]||[]).length; return `<div><div class="small muted" style="font-weight:700">${d.toLocaleDateString('en-AU',{weekday:'narrow'})}</div><div style="width:22px;height:22px;border-radius:8px;margin:4px auto 0;background:${n?'var(--accent)':'var(--accentSoft)'};opacity:${n?Math.min(1,.45+n*.2):1}"></div></div>`; }).join('')}</div>
+    ${nudge}</div>`;
+}
+function hardMonthBanner(){
+  const hm = S.settings.hardMonths||[]; if (!hm.length) return '';
+  const now = new Date(); const m = now.getMonth()+1; const nextM = m%12+1;
+  if (hm.includes(m) || (hm.includes(nextM) && now.getDate()>=20)) return `<div class="banner" style="background:var(--accentSoft)"><span class="dot" style="background:var(--accent);box-shadow:none"></span><span>${esc(S.settings.hardMonthNote || 'This time of year can be harder for you. Small steps count.')}</span></div>`;
+  return '';
 }
 function renderHome(){
   const ns = nextSessionDate();
@@ -129,6 +159,7 @@ function renderHome(){
       <div class="eyebrow" style="color:inherit;opacity:.85">Next session</div>
       <div style="margin-top:6px"><span class="big">${d<0?'–':d===0?'Today':d}</span> ${d>0?`<span class="unit">${d===1?'day to go':'days to go'}</span>`:''}</div>
       <div class="when">${esc(fmtWhen(ns))}</div>
+      ${upcomingAfter(ns).length?`<div class="small" style="opacity:.85;margin-top:2px;font-weight:600">Then ${upcomingAfter(ns).slice(0,3).map(d=>esc(fmtDate(d,{day:'numeric',month:'short'}))).join(' \u00b7 ')}</div>`:''}
       <div class="row"><button class="pill press" data-action="calendar">${ICON.cal.replace('<svg','<svg style="width:16px;height:16px;vertical-align:-3px;margin-right:4px"')}Add reminder to calendar</button><button class="pill press" data-action="settings">Change</button></div>
     </div>`;
   } else {
@@ -142,6 +173,7 @@ function renderHome(){
       <button class="iconbtn" data-action="settings" aria-label="Settings">${ICON.gear}</button></div>
     ${rem?`<div class="banner"><span class="dot"></span><span>${esc(rem)}</span></div>`:''}
     ${backupDue()?`<button class="banner press" style="width:100%;text-align:left;background:var(--accentSoft)" data-action="backupNow"><span class="dot" style="background:var(--accent);box-shadow:none"></span><span style="flex:1">${S.settings.lastAutoErr?'Automatic backup isn\u2019t working right now.':S.settings.lastBackup?'It\u2019s been a week since your last backup.':'Keep your notes safe: turn on automatic backup.'} <b style="color:var(--accent)">Back up now</b></span></button>`:''}
+    ${hardMonthBanner()}
     ${hero}
     <div class="card tight"><div class="lbl" style="margin-bottom:10px">How are you feeling right now?</div>
       <div class="moods">${MOODS.map(m=>`<button class="mood" data-action="quickMood" data-v="${m.v}"><span class="e">${m.e}</span><span class="w">${m.w}</span></button>`).join('')}</div></div>
@@ -149,8 +181,10 @@ function renderHome(){
       <button class="stat press" data-action="tab" data-to="prep"><div class="n">${raise}</div><div class="l">${raise===1?'note':'notes'} to bring up</div></button>
       <button class="stat press" data-action="tab" data-to="sessions"><div class="n">${todos.length?`${done}<span class="muted" style="font-size:20px">/${todos.length}</span>`:'0'}</div><div class="l">to-dos done</div></button>
     </div>
+    ${coach?`<button class="card coach press" style="display:block;width:100%;text-align:left" data-action="coachNext"><div class="row"><span class="eyebrow">Your backup coach</span><span class="small muted" style="font-weight:700">tap for another</span></div><div class="q" style="margin-top:8px">${esc(coach.text)}</div><div class="from small muted">${coach.from==='reminder'?'One of your reminders.':'From your session on '+esc(fmtDate(coach.date))+'.'} Your psychologist knows best, this is just a nudge.</div></button>`:''}
+    ${habitsCard()}
     ${renderTodoCard(todos, 'Before next session')}
-    ${coach?`<div class="card coach"><div class="eyebrow">Your backup coach</div><div class="q" style="margin-top:8px">${esc(coach.text)}</div><div class="from small muted">From your session on ${esc(fmtDate(coach.date))}. Your psychologist knows best, this is just a nudge.</div></div>`:
+    ${coach?'':
       `<div class="card coach"><div class="eyebrow">Getting started</div><div class="q" style="margin-top:8px">Paste in your last session summary and I’ll turn it into a to-do list, the things to practise, and gentle reminders.</div><div style="margin-top:12px"><button class="btn" data-action="newSession">${ICON.paste}Add a session summary</button></div></div>`}
   </div>`;
 }
@@ -393,10 +427,11 @@ function renderAfter(){
       <div class="btnrow"><button class="btn ghost" data-action="afterBack">Back</button><button class="btn" data-action="afterNext">Next</button></div>`);
   } else {
     const prev = new Date(after.date);
-    const next = new Date(prev.getTime() + S.settings.intervalDays*DAY);
+    const next = upcomingAfter(prev)[0] || new Date(prev.getTime() + S.settings.intervalDays*DAY);
+    const fromList = !!upcomingAfter(prev)[0];
     openSheet('Next session', `
       <div class="field"><label>This session was on</label><input type="datetime-local" id="afterDate" value="${esc(after.date)}"></div>
-      <div class="field"><label>Next session</label><input type="datetime-local" id="afterNextDate" value="${toLocalInput(next)}"><div class="small muted" style="margin:6px 2px 0">Set to ${S.settings.intervalDays} days later. Change it if needed.</div></div>
+      <div class="field"><label>Next session</label><input type="datetime-local" id="afterNextDate" value="${toLocalInput(next)}"><div class="small muted" style="margin:6px 2px 0">${fromList?'Your next booked session.':'Set to '+S.settings.intervalDays+' days later.'} Change it if needed.</div></div>
       <div class="section"><div style="font-weight:800;margin-bottom:4px">Got your session summary?</div><div class="small muted" style="margin-bottom:10px">You can paste it now or add it later from Sessions.</div>
         <textarea id="afterSummary" class="big" placeholder="Paste the summary from your psychologist’s website here (optional)"></textarea>
         <button class="btn soft" style="margin-top:10px" data-action="pasteInto" data-target="afterSummary">${ICON.paste}Paste</button></div>
@@ -423,7 +458,7 @@ function renderSessions(){
       ${open?`<div style="margin-top:14px">
         ${s.coachNote?`<div class="theme coach" style="margin-bottom:12px"><div class="eyebrow">Backup coach</div><div style="font-weight:700;margin-top:4px">${esc(s.coachNote)}</div></div>`:''}
         ${todos.length?`<div class="eyebrow" style="margin-bottom:6px">To-do</div>${todos.map(todoRow).join('')}`:''}
-        ${listBlock('Key insights', s.insights)}${listBlock('Suggestions', s.suggestions)}
+        ${listBlock('Between-session practice', s.practiceList)}${listBlock('Key insights', s.insights)}${listBlock('Suggestions', s.suggestions)}
         ${disc.length?`<div class="eyebrow" style="margin:14px 0 6px">Notes you talked about</div>${disc.map(n=>`<div class="small" style="padding:6px 0;border-top:1px solid var(--line)"><b>${esc(n.text||'(mood only)')}</b>${n.outcome?`<br><span class="muted">→ ${esc(n.outcome)}</span>`:''}</div>`).join('')}`:''}
         ${s.summary?`<div class="eyebrow" style="margin:14px 0 6px">Full summary</div><div class="summaryText" id="sum-${s.id}">${esc(s.summary)}</div><button class="link small" style="color:var(--accent);font-weight:800;margin-top:6px" data-action="expandSum" data-id="${s.id}">Show all</button>`:''}
         <div class="btnrow" style="margin-top:14px"><button class="btn ghost" data-action="editSession" data-id="${s.id}">Edit</button><button class="btn danger" data-action="deleteSession" data-id="${s.id}">Delete</button></div>
@@ -617,6 +652,12 @@ function openSettings(){
       <div class="field" style="margin-bottom:0"><label class="small muted">Start reminding me</label><div class="seg">${[[1,'1 day before'],[2,'2 days'],[3,'3 days']].map(([k,l])=>`<button class="${s.remindDays===k?'on':''}" data-action="remind" data-v="${k}">${l}</button>`).join('')}</div></div>
       <button class="btn soft" style="margin-top:14px" data-action="calendar">${ICON.cal}Add session reminder to my calendar</button>
       <div class="small muted" style="margin-top:6px">Puts the session in your phone’s calendar with alerts 2 days and 1 hour before.</div></div>
+    <div class="section"><div class="lbl">My reminders</div><div class="small muted" style="margin-bottom:10px">Phrases that help you. The backup coach on Home rotates through them.</div>
+      ${(s.reminders||[]).map((r,i)=>`<div class="ritem"><span style="flex:1;font-weight:600">${esc(r)}</span><button class="x" data-action="remDel" data-i="${i}" aria-label="Remove">\u00d7</button></div>`).join('')}
+      <button class="chip add sm" style="margin-top:8px" data-action="remAdd">+ Add reminder</button></div>
+    <div class="section"><div class="lbl">Daily habits</div><div class="small muted" style="margin-bottom:10px">Tick these off on Home.${s.keyHabit?' You\u2019ll get a gentle nudge if '+esc(s.keyHabit.toLowerCase())+' stops for 3 days.':''}</div>
+      ${(s.habits||[]).map((r,i)=>`<div class="ritem"><span style="flex:1;font-weight:600">${esc(r)}</span><button class="x" data-action="habDel" data-i="${i}" aria-label="Remove">\u00d7</button></div>`).join('')}
+      <button class="chip add sm" style="margin-top:8px" data-action="habAdd">+ Add habit</button></div>
     <div class="section"><div class="lbl">AI helper (optional)</div>
       <div class="small muted" style="margin-bottom:10px">With your own Claude API key, I can read summaries more carefully and group your notes into themes. The key stays on this phone. Summaries and notes are sent to Claude only when you tap an AI button.</div>
       <input type="password" id="setKey" placeholder="sk-ant-…" value="${esc(s.apiKey)}" autocomplete="off">
@@ -793,9 +834,33 @@ function importBackup(file){
       $('#ubOk').onclick = async () => { const pass=$('#ubp').value; let data; try { data = await decryptJSON(j, pass); } catch(e){ return toast('That password didn\u2019t work'); } restoreData(data); S.settings.backupPass = pass; save(); };
       return;
     }
+    if (j.kind==='sessions-import') return importSessions(j);
     restoreData(j.data || j);
   };
   rd.readAsText(file);
+}
+// adds past sessions (and their to-dos) without touching anything already in the app
+function importSessions(j){
+  let added = 0;
+  (j.sessions||[]).forEach(sess=>{
+    const day = sess.date.slice(0,10);
+    if (S.sessions.some(x=>x.id===sess.id || x.date.slice(0,10)===day)) return;
+    S.sessions.push(sess); added++;
+    (j.todos||[]).filter(t=>t.sessionId===sess.id).forEach(t=>S.todos.push(t));
+  });
+  const latest = lastSession();
+  S.todos.forEach(t=>{ if (t.done && latest && t.sessionId!==latest.id) t.archived=true; });
+  const ps = j.settings || {}, st = S.settings;
+  const union = (a,b) => [...new Set([...(a||[]), ...(b||[])])];
+  if (ps.reminders) st.reminders = union(st.reminders, ps.reminders);
+  if (ps.habits) st.habits = union(ps.habits, st.habits.filter(h=>!['Walk','Meditation','Exercise'].includes(h) || ps.habits.includes(h)));
+  ['keyHabit','keyHabitNote','hardMonthNote','intervalDays'].forEach(k=>{ if (ps[k]!==undefined) st[k]=ps[k]; });
+  if (ps.hardMonths) st.hardMonths = union(st.hardMonths, ps.hardMonths);
+  if (ps.upcoming) st.upcoming = union(st.upcoming, ps.upcoming).sort();
+  if (ps.nextSession && (!st.nextSession || new Date(st.nextSession) < new Date() || new Date(ps.nextSession) < new Date(st.nextSession))) st.nextSession = ps.nextSession;
+  if (ps.customTags) for (const g in ps.customTags) st.customTags[g] = union(st.customTags[g], ps.customTags[g]);
+  save(); closeSheet(); openSessionId=null; go('home');
+  toast(added ? `Added ${plural(added,'session')} and your personal settings` : 'Sessions already there. Personal settings updated.');
 }
 function restoreData(data){
   try {
@@ -894,7 +959,7 @@ document.addEventListener('click', async e=>{
     case 'kind': syncDraftFields(); draft.kind = draft.kind===b.dataset.v?'':b.dataset.v; haptic(); refreshEditor(); break;
     case 'moodPick': syncDraftFields(); draft.tags.mood = draft.tags.mood===+b.dataset.v?0:+b.dataset.v; haptic(); refreshEditor(); break;
     case 'tagToggle': { syncDraftFields(); const g=b.dataset.g, v=b.dataset.v; const arr=draft.tags[g]=draft.tags[g]||[]; const i=arr.indexOf(v); i>=0?arr.splice(i,1):arr.push(v); haptic(); b.classList.toggle('on'); const sum=b.closest('details').querySelector('.r'); sum.innerHTML = arr.length?`<span class="cnt">${arr.length}</span>`:''; break; }
-    case 'tagAdd': { syncDraftFields(); const g=b.dataset.g; const keep=draft; promptSheet(g==='people'?'Add a person':'Add a trigger', g==='people'?'Name':'e.g. Driving', v=>{ draft=keep; const ct=S.settings.customTags[g]; if(!ct.includes(v)) ct.push(v); save(); draft.tags[g].push(v); openSheet(draft._isNew?'Log a note':'Edit note', noteEditorHtml()); }); break; }
+    case 'tagAdd': { syncDraftFields(); const g=b.dataset.g; const keep=draft; promptSheet(g==='people'?'Add a person':'Add a '+TAGS[g].label.toLowerCase().replace(/s$/,''), g==='people'?'Name':'Type it here', v=>{ draft=keep; const ct=S.settings.customTags[g]; if(!ct.includes(v)) ct.push(v); save(); draft.tags[g].push(v); openSheet(draft._isNew?'Log a note':'Edit note', noteEditorHtml()); }); break; }
     case 'starToggle': syncDraftFields(); draft.starred=!draft.starred; haptic(); refreshEditor(); break;
     case 'discussedToggle': syncDraftFields(); draft.discussed=!draft.discussed; refreshEditor(); break;
     case 'saveNote': {
@@ -956,6 +1021,12 @@ document.addEventListener('click', async e=>{
     case 'pin': saveSettingsFields(); save(); if (S.settings.pin){ S.settings.pin=''; S.settings.faceId=''; save(); openSettings(); toast('Code removed'); } else { closeSheet(); showLock('set1'); } break;
     case 'faceid': saveSettingsFields(); save(); if (S.settings.faceId){ S.settings.faceId=''; save(); openSettings(); toast('Face ID unlock off'); } else setupFaceId(); break;
     case 'changeBackupPass': saveSettingsFields(); save(); askBackupPass(()=>openSettings()); break;
+    case 'coachNext': coachShift++; haptic(); render(); break;
+    case 'habit': { const k=dayKey(new Date()); const arr=S.habitLog[k]=S.habitLog[k]||[]; const v=b.dataset.v; const i=arr.indexOf(v); i>=0?arr.splice(i,1):arr.push(v); save(); haptic(); render(); if (i<0) toast('Nice. Small steps count.'); break; }
+    case 'remAdd': saveSettingsFields(); save(); promptSheet('Add a reminder', 'e.g. Stay with the facts', v=>{ S.settings.reminders.push(v); save(); openSettings(); }); break;
+    case 'remDel': saveSettingsFields(); S.settings.reminders.splice(+b.dataset.i,1); save(); openSettings(); break;
+    case 'habAdd': saveSettingsFields(); save(); promptSheet('Add a daily habit', 'e.g. Physio', v=>{ S.settings.habits.push(v); save(); openSettings(); }); break;
+    case 'habDel': saveSettingsFields(); S.settings.habits.splice(+b.dataset.i,1); save(); openSettings(); break;
     case 'backupNow': S.settings.driveUrl ? driveBackup(true).then(render) : (S.settings.lastBackup ? exportBackup() : openDriveSetup()); break;
     case 'driveSetup': saveSettingsFields(); save(); openDriveSetup(); break;
     case 'driveNow': driveBackup(true).then(()=>openSettings()); break;

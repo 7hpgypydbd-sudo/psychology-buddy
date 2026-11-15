@@ -1,7 +1,7 @@
 /* Psychology Buddy: a companion for fortnightly psychology sessions.
    Everything is saved on this phone only (localStorage). Optional AI uses the person's own Claude API key. */
 'use strict';
-const BUILD = 6;
+const BUILD = 7;
 const KEY = 'psybuddy.v1';
 
 /* ---------- tag vocab ---------- */
@@ -190,7 +190,7 @@ function renderHome(){
     ${backupDue()?`<button class="banner press" style="width:100%;text-align:left;background:var(--accentSoft)" data-action="backupNow"><span class="dot" style="background:var(--accent);box-shadow:none"></span><span style="flex:1">${S.settings.lastAutoErr?'Automatic backup isn\u2019t working right now.':S.settings.lastBackup?'It\u2019s been a week since your last backup.':'Keep your notes safe: turn on automatic backup.'} <b style="color:var(--accent)">Back up now</b></span></button>`:''}
     ${hardMonthBanner()}
     ${S.settings.driveUrl && !S.settings.backupPass?`<button class="banner press" style="width:100%;text-align:left;background:var(--accentSoft)" data-action="finishBackup"><span class="dot" style="background:var(--accent);box-shadow:none"></span><span style="flex:1">Automatic Google Drive backup is ready. <b style="color:var(--accent)">Choose a backup password to turn it on</b></span></button>`:''}
-    ${!S.sessions.length?`<button class="banner press" style="width:100%;text-align:left;background:var(--goodSoft)" data-action="pasteImport"><span class="dot" style="background:var(--good);box-shadow:none"></span><span style="flex:1">Got a link from Claude with your sessions? <b style="color:var(--good)">Paste my sessions</b></span></button>`:''}
+    ${(!S.sessions.length || !(S.settings.imported||[]).includes('sessions-2026-11-15b'))?`<button class="banner press" style="width:100%;text-align:left;background:var(--goodSoft)" data-action="pasteImport"><span class="dot" style="background:var(--good);box-shadow:none"></span><span style="flex:1">Got a link from Claude with your sessions? <b style="color:var(--good)">Paste my sessions</b></span></button>`:''}
     ${hero}
     <div class="card tight"><div class="lbl" style="margin-bottom:10px">How are you feeling right now?</div>
       <div class="moods">${MOODS.map(m=>`<button class="mood" data-action="quickMood" data-v="${m.v}"><span class="e">${m.e}</span><span class="w">${m.w}</span></button>`).join('')}</div></div>
@@ -463,7 +463,7 @@ let openSessionId = null;
 function renderSessions(){
   const list = [...S.sessions].sort((a,b)=>b.date.localeCompare(a.date));
   let html = `<div class="screen"><div class="top"><div><div class="sub">Summaries, to-dos and insights</div><h1>Sessions</h1></div></div>
-    <button class="btn press" data-action="newSession" style="margin-bottom:16px">${ICON.paste}Add a session summary</button>`;
+    <div class="btnrow" style="margin-bottom:16px"><button class="btn press" data-action="newSession">${ICON.paste}Add a summary</button><button class="btn soft press" style="flex:.8" data-action="pasteImport">Paste update from Claude</button></div>`;
   if (!list.length) html += `<div class="card empty"><div class="ic">🗂️</div><div style="font-weight:800;color:var(--text)">No sessions yet</div><div class="small" style="margin-top:4px">Copy the summary from your psychologist’s website and paste it here. I’ll pull out your to-dos, insights and things to practise.</div></div>`;
   list.forEach((s,i)=>{
     const todos = S.todos.filter(t=>t.sessionId===s.id && !t.archived);

@@ -1,7 +1,7 @@
 /* Psychology Buddy: a companion for fortnightly psychology sessions.
    Everything is saved on this phone only (localStorage). Optional AI uses the person's own Claude API key. */
 'use strict';
-const BUILD = 7;
+const BUILD = 8;
 const KEY = 'psybuddy.v1';
 
 /* ---------- tag vocab ---------- */
@@ -190,7 +190,7 @@ function renderHome(){
     ${backupDue()?`<button class="banner press" style="width:100%;text-align:left;background:var(--accentSoft)" data-action="backupNow"><span class="dot" style="background:var(--accent);box-shadow:none"></span><span style="flex:1">${S.settings.lastAutoErr?'Automatic backup isn\u2019t working right now.':S.settings.lastBackup?'It\u2019s been a week since your last backup.':'Keep your notes safe: turn on automatic backup.'} <b style="color:var(--accent)">Back up now</b></span></button>`:''}
     ${hardMonthBanner()}
     ${S.settings.driveUrl && !S.settings.backupPass?`<button class="banner press" style="width:100%;text-align:left;background:var(--accentSoft)" data-action="finishBackup"><span class="dot" style="background:var(--accent);box-shadow:none"></span><span style="flex:1">Automatic Google Drive backup is ready. <b style="color:var(--accent)">Choose a backup password to turn it on</b></span></button>`:''}
-    ${(!S.sessions.length || !(S.settings.imported||[]).includes('sessions-2026-11-15b'))?`<button class="banner press" style="width:100%;text-align:left;background:var(--goodSoft)" data-action="pasteImport"><span class="dot" style="background:var(--good);box-shadow:none"></span><span style="flex:1">Got a link from Claude with your sessions? <b style="color:var(--good)">Paste my sessions</b></span></button>`:''}
+    ${(!S.sessions.length || !(S.settings.imported||[]).includes('sessions-2026-11-15c'))?`<button class="banner press" style="width:100%;text-align:left;background:var(--goodSoft)" data-action="pasteImport"><span class="dot" style="background:var(--good);box-shadow:none"></span><span style="flex:1">Got a link from Claude with your sessions? <b style="color:var(--good)">Paste my sessions</b></span></button>`:''}
     ${hero}
     <div class="card tight"><div class="lbl" style="margin-bottom:10px">How are you feeling right now?</div>
       <div class="moods">${MOODS.map(m=>`<button class="mood" data-action="quickMood" data-v="${m.v}"><span class="e">${m.e}</span><span class="w">${m.w}</span></button>`).join('')}</div></div>
@@ -893,19 +893,21 @@ async function pasteImport(){
     offerImport(await inflateB64(m[1]), null);
   } catch(e){ toast('Couldn’t paste. Tap the link from Claude again.'); }
 }
-function importSessions(j){
+function importSessions(j, silent){
+  const st0 = S.settings;
+  if (j.id && (st0.imported||[]).includes(j.id)) { if (silent) return 0; closeSheet(); go('home'); return toast('Already added'); }
   let added = 0;
   (j.sessions||[]).forEach(sess=>{
     const day = sess.date.slice(0,10);
     if (S.sessions.some(x=>x.id===sess.id || x.date.slice(0,10)===day)) return;
     S.sessions.push(sess); added++;
-    (j.todos||[]).filter(t=>t.sessionId===sess.id).forEach(t=>S.todos.push(t));
   });
+  // to-dos: add any new ones that belong to a session in the app
+  (j.todos||[]).forEach(t=>{ if (!S.todos.some(x=>x.id===t.id) && S.sessions.some(x=>x.id===t.sessionId)) S.todos.push(t); });
   const latest = lastSession();
   S.todos.forEach(t=>{ if (t.done && latest && t.sessionId!==latest.id) t.archived=true; });
   const ps = j.settings || {}, st = S.settings;
   st.imported = st.imported || [];
-  if (j.id && st.imported.includes(j.id)) { closeSheet(); go('home'); return toast('Already added'); }
   if (j.id) st.imported.push(j.id);
   const union = (a,b) => [...new Set([...(a||[]), ...(b||[])])];
   if (ps.reminders) st.reminders = union(st.reminders, ps.reminders);
@@ -917,9 +919,32 @@ function importSessions(j){
   if (ps.upcoming) st.upcoming = union(st.upcoming, ps.upcoming).sort();
   if (ps.nextSession && (!st.nextSession || new Date(st.nextSession) < new Date() || new Date(ps.nextSession) < new Date(st.nextSession))) st.nextSession = ps.nextSession;
   if (ps.customTags) for (const g in ps.customTags) st.customTags[g] = union(st.customTags[g], ps.customTags[g]);
-  save(); closeSheet(); openSessionId=null; go('home');
+  save();
+  if (silent) return added + 1;
+  closeSheet(); openSessionId=null; go('home');
   toast(added ? `Added ${plural(added,'session')} and your personal settings` : 'Sessions already there. Personal settings updated.');
 }
+/* ---------- updates from Claude: small files Claude puts in your own Drive folder "Psychology Buddy updates" ---------- */
+let pulling = false, lastPull = 0;
+async function pullUpdates(force){
+  const st = S.settings;
+  if (pulling || !st.driveUrl || !st.driveToken || !navigator.onLine) return;
+  if (!force && Date.now() - lastPull < 5*60e3) return;
+  pulling = true; lastPull = Date.now();
+  try {
+    const r = await fetch(st.driveUrl + '?token=' + encodeURIComponent(st.driveToken), {cache:'no-store'});
+    const list = await r.json();
+    let changed = 0, sessions = 0;
+    (Array.isArray(list) ? list : []).forEach(j=>{
+      if (!j || j.kind!=='sessions-import' || !j.id || (st.imported||[]).includes(j.id)) return;
+      const before = S.sessions.length;
+      if (importSessions(j, true)) { changed++; sessions += S.sessions.length - before; }
+    });
+    if (changed){ render(); toast(sessions ? `New from Claude: ${plural(sessions,'session')} added` : 'Updated with your latest info'); }
+  } catch(e){ /* offline or Drive busy: try again next time */ }
+  pulling = false;
+}
+
 function restoreData(data){
   try {
     if (!Array.isArray(data.notes) || !Array.isArray(data.sessions)) throw new Error('not a backup');
@@ -995,7 +1020,7 @@ function pinPress(k){
 }
 document.addEventListener('visibilitychange', ()=>{
   if (document.hidden){ hiddenAt = Date.now(); maybeAutoBackup(); }
-  else { if (S.settings.pin && hiddenAt && Date.now()-hiddenAt > 2*60e3) showLock('unlock'); render(); }
+  else { if (S.settings.pin && hiddenAt && Date.now()-hiddenAt > 2*60e3) showLock('unlock'); render(); pullUpdates(); }
 });
 
 /* ---------- events ---------- */
@@ -1115,7 +1140,8 @@ applyTheme();
 render();
 if (S.settings.pin) showLock('unlock');
 setTimeout(maybeAutoBackup, 4000);
+setTimeout(()=>pullUpdates(true), 1200);
 checkLinkImport();
 window.addEventListener('hashchange', checkLinkImport);
-window.addEventListener('online', maybeAutoBackup);
+window.addEventListener('online', ()=>{ maybeAutoBackup(); pullUpdates(); });
 if ('serviceWorker' in navigator && location.protocol==='https:') navigator.serviceWorker.register('sw.js').catch(()=>{});

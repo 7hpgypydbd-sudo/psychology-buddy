@@ -1,7 +1,7 @@
 /* Psychology Buddy: a companion for fortnightly psychology sessions.
    Everything is saved on this phone only (localStorage). Optional AI uses the person's own Claude API key. */
 'use strict';
-const BUILD = 8;
+const BUILD = 9;
 const KEY = 'psybuddy.v1';
 
 /* ---------- tag vocab ---------- */
@@ -886,12 +886,22 @@ function offerImport(j, code){
   };
 }
 async function pasteImport(){
-  try {
-    const t = (await navigator.clipboard.readText()||'').trim();
-    const m = t.match(/PSYBUDDY:([A-Za-z0-9_-]+)/) || t.match(/#add=([A-Za-z0-9_-]+)/);
-    if (!m) return toast('Nothing to paste yet. Tap the link from Claude first.');
-    offerImport(await inflateB64(m[1]), null);
-  } catch(e){ toast('Couldn’t paste. Tap the link from Claude again.'); }
+  let t = '';
+  try { t = (await navigator.clipboard.readText()||'').trim(); } catch(e){ return pasteBox(); }
+  if (!(await tryCode(t))) pasteBox();
+}
+async function tryCode(t){
+  const m = (t||'').match(/PSYBUDDY:([A-Za-z0-9_-]+)/) || (t||'').match(/#add=([A-Za-z0-9_-]+)/) || (t||'').match(/^([A-Za-z0-9_-]{200,})$/);
+  if (!m) return false;
+  try { offerImport(await inflateB64(m[1]), null); return true; } catch(e){ return false; }
+}
+// fallback when the phone won't let Buddy read the clipboard: paste into a box by hand
+function pasteBox(){
+  openSheet('Paste here', `<div class="muted" style="margin:0 2px 12px">Press and hold in the box below, tap <b>Paste</b>, then tap Add.</div>
+    <div class="field"><textarea id="pbIn" rows="3" placeholder="Press and hold here, then Paste" style="width:100%;font-size:16px"></textarea></div>
+    <button class="btn" id="pbOk">Add</button>`);
+  const go = async () => { if (!(await tryCode($('#pbIn').value.trim()))) toast('That doesn’t look right. Tap Copy for Buddy again, then paste.'); };
+  $('#pbOk').onclick = go; $('#pbIn').addEventListener('input', ()=>{ if ($('#pbIn').value.length > 200) go(); });
 }
 function importSessions(j, silent){
   const st0 = S.settings;

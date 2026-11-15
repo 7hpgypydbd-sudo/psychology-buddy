@@ -1,7 +1,7 @@
 /* Psychology Buddy: a companion for fortnightly psychology sessions.
    Everything is saved on this phone only (localStorage). Optional AI uses the person's own Claude API key. */
 'use strict';
-const BUILD = 3;
+const BUILD = 4;
 const KEY = 'psybuddy.v1';
 
 /* ---------- tag vocab ---------- */
@@ -174,6 +174,7 @@ function renderHome(){
     ${rem?`<div class="banner"><span class="dot"></span><span>${esc(rem)}</span></div>`:''}
     ${backupDue()?`<button class="banner press" style="width:100%;text-align:left;background:var(--accentSoft)" data-action="backupNow"><span class="dot" style="background:var(--accent);box-shadow:none"></span><span style="flex:1">${S.settings.lastAutoErr?'Automatic backup isn\u2019t working right now.':S.settings.lastBackup?'It\u2019s been a week since your last backup.':'Keep your notes safe: turn on automatic backup.'} <b style="color:var(--accent)">Back up now</b></span></button>`:''}
     ${hardMonthBanner()}
+    ${!S.sessions.length?`<button class="banner press" style="width:100%;text-align:left;background:var(--goodSoft)" data-action="pasteImport"><span class="dot" style="background:var(--good);box-shadow:none"></span><span style="flex:1">Got a link from Claude with your sessions? <b style="color:var(--good)">Paste my sessions</b></span></button>`:''}
     ${hero}
     <div class="card tight"><div class="lbl" style="margin-bottom:10px">How are you feeling right now?</div>
       <div class="moods">${MOODS.map(m=>`<button class="mood" data-action="quickMood" data-v="${m.v}"><span class="e">${m.e}</span><span class="w">${m.w}</span></button>`).join('')}</div></div>
@@ -840,6 +841,38 @@ function importBackup(file){
   rd.readAsText(file);
 }
 // adds past sessions (and their to-dos) without touching anything already in the app
+/* ---------- one-tap link: data travels in the #fragment, which never reaches any server ---------- */
+const isStandalone = () => window.navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
+async function inflateB64(b){
+  const bin = Uint8Array.from(atob(b.replace(/-/g,'+').replace(/_/g,'/')), c=>c.charCodeAt(0));
+  const stream = new Blob([bin]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+  return JSON.parse(await new Response(stream).text());
+}
+async function checkLinkImport(){
+  const m = location.hash.match(/^#add=([A-Za-z0-9_-]+)/); if (!m) return;
+  const code = m[1];
+  history.replaceState(null, '', location.pathname + location.search); // wipe it from the address bar
+  try { offerImport(await inflateB64(code), code); } catch(e){ toast('That link didn’t work. Ask Claude for a fresh one.'); }
+}
+function offerImport(j, code){
+  const n = (j.sessions||[]).length;
+  openSheet('Add your sessions?', `<div style="font-weight:600;margin:4px 2px 18px">This adds ${plural(n,'session')} (${esc(fmtDate(j.sessions[0].date,{day:'numeric',month:'short'}))} to ${esc(fmtDate(j.sessions[n-1].date,{day:'numeric',month:'short'}))}), their to-dos, and your personal reminders, habits and session dates. Nothing already in the app is replaced.</div>
+    <button class="btn" id="liAdd">Add them</button>`);
+  $('#liAdd').onclick = async () => {
+    // also copy, so the Home Screen app can pick it up if this opened in a Safari tab
+    if (!isStandalone() && code) { try { await navigator.clipboard.writeText('PSYBUDDY:' + code); } catch(e){} }
+    importSessions(j);
+    if (!isStandalone() && /iPhone|iPad/.test(navigator.userAgent)) setTimeout(()=>openSheet('Nearly there', `<div style="font-weight:600;margin:4px 2px 14px">Added here in Safari. If you use Buddy from your Home Screen, open it there now and tap <b>Paste my sessions</b> on the Home page. It’s already copied.</div><div class="small muted" style="margin:0 2px 16px">Haven’t added it to your Home Screen yet? Tap Share, then Add to Home Screen.</div><button class="btn" data-action="closeSheet">OK</button>`), 900);
+  };
+}
+async function pasteImport(){
+  try {
+    const t = (await navigator.clipboard.readText()||'').trim();
+    const m = t.match(/PSYBUDDY:([A-Za-z0-9_-]+)/) || t.match(/#add=([A-Za-z0-9_-]+)/);
+    if (!m) return toast('Nothing to paste yet. Tap the link from Claude first.');
+    offerImport(await inflateB64(m[1]), null);
+  } catch(e){ toast('Couldn’t paste. Tap the link from Claude again.'); }
+}
 function importSessions(j){
   let added = 0;
   (j.sessions||[]).forEach(sess=>{
@@ -851,6 +884,9 @@ function importSessions(j){
   const latest = lastSession();
   S.todos.forEach(t=>{ if (t.done && latest && t.sessionId!==latest.id) t.archived=true; });
   const ps = j.settings || {}, st = S.settings;
+  st.imported = st.imported || [];
+  if (j.id && st.imported.includes(j.id)) { closeSheet(); go('home'); return toast('Already added'); }
+  if (j.id) st.imported.push(j.id);
   const union = (a,b) => [...new Set([...(a||[]), ...(b||[])])];
   if (ps.reminders) st.reminders = union(st.reminders, ps.reminders);
   if (ps.habits) st.habits = union(ps.habits, st.habits.filter(h=>!['Walk','Meditation','Exercise'].includes(h) || ps.habits.includes(h)));
@@ -1021,6 +1057,7 @@ document.addEventListener('click', async e=>{
     case 'pin': saveSettingsFields(); save(); if (S.settings.pin){ S.settings.pin=''; S.settings.faceId=''; save(); openSettings(); toast('Code removed'); } else { closeSheet(); showLock('set1'); } break;
     case 'faceid': saveSettingsFields(); save(); if (S.settings.faceId){ S.settings.faceId=''; save(); openSettings(); toast('Face ID unlock off'); } else setupFaceId(); break;
     case 'changeBackupPass': saveSettingsFields(); save(); askBackupPass(()=>openSettings()); break;
+    case 'pasteImport': pasteImport(); break;
     case 'coachNext': coachShift++; haptic(); render(); break;
     case 'habit': { const k=dayKey(new Date()); const arr=S.habitLog[k]=S.habitLog[k]||[]; const v=b.dataset.v; const i=arr.indexOf(v); i>=0?arr.splice(i,1):arr.push(v); save(); haptic(); render(); if (i<0) toast('Nice. Small steps count.'); break; }
     case 'remAdd': saveSettingsFields(); save(); promptSheet('Add a reminder', 'e.g. Stay with the facts', v=>{ S.settings.reminders.push(v); save(); openSettings(); }); break;
@@ -1051,5 +1088,7 @@ applyTheme();
 render();
 if (S.settings.pin) showLock('unlock');
 setTimeout(maybeAutoBackup, 4000);
+checkLinkImport();
+window.addEventListener('hashchange', checkLinkImport);
 window.addEventListener('online', maybeAutoBackup);
 if ('serviceWorker' in navigator && location.protocol==='https:') navigator.serviceWorker.register('sw.js').catch(()=>{});

@@ -1,7 +1,7 @@
 /* Psychology Buddy: a companion for fortnightly psychology sessions.
    Everything is saved on this phone only (localStorage). Optional AI uses the person's own Claude API key. */
 'use strict';
-const BUILD = 5;
+const BUILD = 6;
 const KEY = 'psybuddy.v1';
 
 /* ---------- tag vocab ---------- */
@@ -21,7 +21,7 @@ const OUTCOMES = ['Helpful','Feel better about it','Need more time','Revisit nex
 /* ---------- state ---------- */
 const DEFAULT_STATE = () => ({
   version:1,
-  settings:{theme:'auto', nextSession:'', intervalDays:14, remindDays:2, apiKey:'', pin:'', faceId:'', backupPass:'', lastBackup:'', driveUrl:'', driveToken:'', lastAuto:'', lastAutoErr:'', dirty:false, reminders:[], habits:['Walk','Meditation','Exercise'], keyHabit:'Walk', keyHabitNote:'', upcoming:[], hardMonths:[], hardMonthNote:'', customTags:{feelings:[], body:[], triggers:[], people:[]}},
+  settings:{theme:'auto', nextSession:'', intervalDays:14, remindDays:2, apiKey:'', pin:'', faceId:'', backupPass:'', lastBackup:'', driveUrl:'', driveToken:'', lastAuto:'', lastAutoErr:'', dirty:false, reminders:[], habits:['Walk','Meditation','Exercise'], keyHabit:'Walk', keyHabitNote:'', upcoming:[], hardMonths:[], hardMonthNote:'', evidence:[], toughWords:[], toughQuestions:[], toughSteps:[], therapistName:'', customTags:{feelings:[], body:[], triggers:[], people:[]}},
   sessions:[], todos:[], notes:[], prep:null, talkSkip:[], habitLog:{}
 });
 let S = load();
@@ -139,6 +139,21 @@ function habitsCard(){
     <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-top:14px;text-align:center">${days.map(({d,k})=>{ const n=(S.habitLog[k]||[]).length; return `<div><div class="small muted" style="font-weight:700">${d.toLocaleDateString('en-AU',{weekday:'narrow'})}</div><div style="width:22px;height:22px;border-radius:8px;margin:4px auto 0;background:${n?'var(--accent)':'var(--accentSoft)'};opacity:${n?Math.min(1,.45+n*.2):1}"></div></div>`; }).join('')}</div>
     ${nudge}</div>`;
 }
+const DEFAULT_QUESTIONS = ['What are the facts I actually know?','Am I assuming what someone thinks or what will happen?','What happened last time I faced something like this?','What’s one small thing I can do right now?'];
+const DEFAULT_STEPS = ['Take five slow breaths, longer out than in','Step outside, even for a minute','Feel your feet on the floor and name 3 things you can see','Message someone supportive'];
+function openTough(){
+  const st = S.settings;
+  const ev = st.evidence||[], words = st.toughWords||[], qs = st.toughQuestions?.length ? st.toughQuestions : DEFAULT_QUESTIONS, steps = st.toughSteps?.length ? st.toughSteps : DEFAULT_STEPS;
+  const list = (items) => `<ul class="clean">${items.map(i=>`<li>${esc(i)}</li>`).join('')}</ul>`;
+  openSheet('A tough moment', `
+    <div class="muted" style="margin:0 2px 14px">This feeling is temporary. You don’t have to fix everything now, just the next small step.</div>
+    ${words.length?`<div class="section coach"><div class="lbl">In your own words</div>${words.map(w=>`<div style="font-weight:700;font-size:17px;line-height:1.4;margin:0 0 10px">${esc(w)}</div>`).join('')}</div>`:''}
+    ${ev.length?`<div class="section"><div class="lbl">You’ve already come through</div>${list(ev)}<div class="small muted" style="margin-top:8px">You’re still here, and stronger for it.</div></div>`:''}
+    <div class="section"><div class="lbl">Check the story</div>${list(qs)}</div>
+    <div class="section"><div class="lbl">One small step</div>${list(steps)}</div>
+    <button class="btn" data-action="toughNote">Write down what’s happening</button>
+    <div class="small muted" style="text-align:center;margin-top:12px">If you feel unsafe, call Lifeline on 13 11 14 or 000.</div>`);
+}
 function hardMonthBanner(){
   const hm = S.settings.hardMonths||[]; if (!hm.length) return '';
   const now = new Date(); const m = now.getMonth()+1; const nextM = m%12+1;
@@ -179,6 +194,7 @@ function renderHome(){
     ${hero}
     <div class="card tight"><div class="lbl" style="margin-bottom:10px">How are you feeling right now?</div>
       <div class="moods">${MOODS.map(m=>`<button class="mood" data-action="quickMood" data-v="${m.v}"><span class="e">${m.e}</span><span class="w">${m.w}</span></button>`).join('')}</div></div>
+    <button class="btn ghost press" style="margin:-4px 0 14px;background:var(--card)" data-action="tough">♥︎ Having a tough moment?</button>
     <div class="stats">
       <button class="stat press" data-action="tab" data-to="prep"><div class="n">${raise}</div><div class="l">${raise===1?'note':'notes'} to bring up</div></button>
       <button class="stat press" data-action="tab" data-to="sessions"><div class="n">${todos.length?`${done}<span class="muted" style="font-size:20px">/${todos.length}</span>`:'0'}</div><div class="l">to-dos done</div></button>
@@ -294,7 +310,7 @@ function renderPrep(){
   const recent = S.notes.filter(n=>new Date(n.createdAt) > new Date(Date.now()-21*DAY));
   const sumHtml = renderNotesSummary(raise);
   return `<div class="screen">
-    <div class="top"><div><div class="sub">${ns?esc(fmtWhen(ns)):'No date set yet'}</div><h1>Next session</h1></div>
+    <div class="top"><div><div class="sub">${ns?esc(fmtWhen(ns)):'No date set yet'}</div><h1>${S.settings.therapistName?'Next session with '+esc(S.settings.therapistName):'Next session'}</h1></div>
       <button class="iconbtn" data-action="settings" aria-label="Settings">${ICON.gear}</button></div>
     <button class="btn talkbtn press" data-action="talk" ${raise.length?'':'disabled'}>${ICON.chat}Give me something to talk about</button>
     <div class="small muted" style="text-align:center;margin:8px 0 16px">${raise.length?`One tap, one topic at a time. ${plural(raise.length,'note')} waiting.`:'Log a few notes and they’ll show up here.'}</div>
@@ -657,6 +673,9 @@ function openSettings(){
     <div class="section"><div class="lbl">My reminders</div><div class="small muted" style="margin-bottom:10px">Phrases that help you. The backup coach on Home rotates through them.</div>
       ${(s.reminders||[]).map((r,i)=>`<div class="ritem"><span style="flex:1;font-weight:600">${esc(r)}</span><button class="x" data-action="remDel" data-i="${i}" aria-label="Remove">\u00d7</button></div>`).join('')}
       <button class="chip add sm" style="margin-top:8px" data-action="remAdd">+ Add reminder</button></div>
+    <div class="section"><div class="lbl">Evidence I can cope</div><div class="small muted" style="margin-bottom:10px">Things you’ve come through. Shown when you tap “Having a tough moment?”</div>
+      ${(s.evidence||[]).map((r,i)=>`<div class="ritem"><span style="flex:1;font-weight:600">${esc(r)}</span><button class="x" data-action="evDel" data-i="${i}" aria-label="Remove">×</button></div>`).join('')}
+      <button class="chip add sm" style="margin-top:8px" data-action="evAdd">+ Add</button></div>
     <div class="section"><div class="lbl">Daily habits</div><div class="small muted" style="margin-bottom:10px">Tick these off on Home.${s.keyHabit?' You\u2019ll get a gentle nudge if '+esc(s.keyHabit.toLowerCase())+' stops for 3 days.':''}</div>
       ${(s.habits||[]).map((r,i)=>`<div class="ritem"><span style="flex:1;font-weight:600">${esc(r)}</span><button class="x" data-action="habDel" data-i="${i}" aria-label="Remove">\u00d7</button></div>`).join('')}
       <button class="chip add sm" style="margin-top:8px" data-action="habAdd">+ Add habit</button></div>
@@ -863,7 +882,7 @@ function offerImport(j, code){
     // also copy, so the Home Screen app can pick it up if this opened in a Safari tab
     if (!isStandalone() && code) { try { await navigator.clipboard.writeText('PSYBUDDY:' + code); } catch(e){} }
     importSessions(j);
-    if (!isStandalone() && /iPhone|iPad/.test(navigator.userAgent)) setTimeout(()=>openSheet('Nearly there', `<div style="font-weight:600;margin:4px 2px 14px">Added here in Safari. If you use Buddy from your Home Screen, open it there now and tap <b>Paste my sessions</b> on the Home page. It’s already copied.</div><div class="small muted" style="margin:0 2px 16px">Haven’t added it to your Home Screen yet? Tap Share, then Add to Home Screen.</div><button class="btn" data-action="closeSheet">OK</button>`), 900);
+    if (code && !isStandalone() && /iPhone|iPad/.test(navigator.userAgent)) setTimeout(()=>openSheet('Nearly there', `<div style="font-weight:600;margin:4px 2px 14px">Added here in Safari. If you use Buddy from your Home Screen, open it there now and tap <b>Paste my sessions</b> on the Home page. It’s already copied.</div><div class="small muted" style="margin:0 2px 16px">Haven’t added it to your Home Screen yet? Tap Share, then Add to Home Screen.</div><button class="btn" data-action="closeSheet">OK</button>`), 900);
   };
 }
 async function pasteImport(){
@@ -890,6 +909,8 @@ function importSessions(j){
   if (j.id) st.imported.push(j.id);
   const union = (a,b) => [...new Set([...(a||[]), ...(b||[])])];
   if (ps.reminders) st.reminders = union(st.reminders, ps.reminders);
+  ['evidence','toughWords','toughQuestions','toughSteps'].forEach(k=>{ if (ps[k]) st[k] = union(st[k], ps[k]); });
+  if (ps.therapistName) st.therapistName = ps.therapistName;
   if (ps.habits) st.habits = union(ps.habits, st.habits.filter(h=>!['Walk','Meditation','Exercise'].includes(h) || ps.habits.includes(h)));
   ['keyHabit','keyHabitNote','hardMonthNote','intervalDays','driveUrl','driveToken'].forEach(k=>{ if (ps[k]!==undefined) st[k]=ps[k]; });
   if (ps.hardMonths) st.hardMonths = union(st.hardMonths, ps.hardMonths);
@@ -1059,11 +1080,15 @@ document.addEventListener('click', async e=>{
     case 'faceid': saveSettingsFields(); save(); if (S.settings.faceId){ S.settings.faceId=''; save(); openSettings(); toast('Face ID unlock off'); } else setupFaceId(); break;
     case 'changeBackupPass': saveSettingsFields(); save(); askBackupPass(()=>openSettings()); break;
     case 'pasteImport': pasteImport(); break;
+    case 'tough': haptic(); openTough(); break;
+    case 'toughNote': closeSheet(); setTimeout(()=>openNoteEditor(null), 350); break;
     case 'finishBackup': askBackupPass(()=>{ driveBackup(true).then(render); }); break;
     case 'coachNext': coachShift++; haptic(); render(); break;
     case 'habit': { const k=dayKey(new Date()); const arr=S.habitLog[k]=S.habitLog[k]||[]; const v=b.dataset.v; const i=arr.indexOf(v); i>=0?arr.splice(i,1):arr.push(v); save(); haptic(); render(); if (i<0) toast('Nice. Small steps count.'); break; }
     case 'remAdd': saveSettingsFields(); save(); promptSheet('Add a reminder', 'e.g. Stay with the facts', v=>{ S.settings.reminders.push(v); save(); openSettings(); }); break;
     case 'remDel': saveSettingsFields(); S.settings.reminders.splice(+b.dataset.i,1); save(); openSettings(); break;
+    case 'evAdd': saveSettingsFields(); save(); promptSheet('Something you’ve come through', 'e.g. Moving house', v=>{ S.settings.evidence.push(v); save(); openSettings(); }); break;
+    case 'evDel': saveSettingsFields(); S.settings.evidence.splice(+b.dataset.i,1); save(); openSettings(); break;
     case 'habAdd': saveSettingsFields(); save(); promptSheet('Add a daily habit', 'e.g. Physio', v=>{ S.settings.habits.push(v); save(); openSettings(); }); break;
     case 'habDel': saveSettingsFields(); S.settings.habits.splice(+b.dataset.i,1); save(); openSettings(); break;
     case 'backupNow': S.settings.driveUrl ? driveBackup(true).then(render) : (S.settings.lastBackup ? exportBackup() : openDriveSetup()); break;

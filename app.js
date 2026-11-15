@@ -1,7 +1,7 @@
 /* Psychology Buddy: a companion for fortnightly psychology sessions.
    Everything is saved on this phone only (localStorage). Optional AI uses the person's own Claude API key. */
 'use strict';
-const BUILD = 10;
+const BUILD = 11;
 const KEY = 'psybuddy.v1';
 
 /* ---------- tag vocab ---------- */
@@ -891,6 +891,9 @@ async function pasteImport(){
   if (!(await tryCode(t))) pasteBox();
 }
 async function tryCode(t){
+  // plain text version (no unzipping needed)
+  const ji = (t||'').indexOf('{');
+  if (ji >= 0 && /sessions-import/.test(t)) { try { const j = JSON.parse(t.slice(ji, t.lastIndexOf('}')+1)); if (j.kind==='sessions-import'){ offerImport(j, null); return true; } } catch(e){} }
   const m = (t||'').match(/PSYBUDDY:([A-Za-z0-9_-]+)/) || (t||'').match(/#add=([A-Za-z0-9_-]+)/) || (t||'').match(/^([A-Za-z0-9_-]{200,})$/);
   if (!m) return false;
   try { offerImport(await inflateB64(m[1]), null); return true; } catch(e){ return false; }

@@ -1,7 +1,7 @@
 /* Psychology Buddy: a companion for fortnightly psychology sessions.
    Everything is saved on this phone only (localStorage). Optional AI uses the person's own Claude API key. */
 'use strict';
-const BUILD = 4;
+const BUILD = 5;
 const KEY = 'psybuddy.v1';
 
 /* ---------- tag vocab ---------- */
@@ -104,7 +104,7 @@ function reminderText(){
   if (raise) bits.push(plural(raise,'note')+' to bring up');
   return when + (bits.length ? ' · ' + bits.join(', ') : ' · you’re all set');
 }
-function backupDue(){ if (S.settings.driveUrl && !S.settings.lastAutoErr) return false; return (S.notes.length + S.sessions.length) >= 3 && (!S.settings.lastBackup || Date.now()-new Date(S.settings.lastBackup) > 7*DAY); }
+function backupDue(){ if (S.settings.driveUrl && (!S.settings.lastAutoErr || !S.settings.backupPass)) return false; return (S.notes.length + S.sessions.length) >= 3 && (!S.settings.lastBackup || Date.now()-new Date(S.settings.lastBackup) > 7*DAY); }
 let coachShift = 0;
 function coachLine(){
   const ls = lastSession();
@@ -174,6 +174,7 @@ function renderHome(){
     ${rem?`<div class="banner"><span class="dot"></span><span>${esc(rem)}</span></div>`:''}
     ${backupDue()?`<button class="banner press" style="width:100%;text-align:left;background:var(--accentSoft)" data-action="backupNow"><span class="dot" style="background:var(--accent);box-shadow:none"></span><span style="flex:1">${S.settings.lastAutoErr?'Automatic backup isn\u2019t working right now.':S.settings.lastBackup?'It\u2019s been a week since your last backup.':'Keep your notes safe: turn on automatic backup.'} <b style="color:var(--accent)">Back up now</b></span></button>`:''}
     ${hardMonthBanner()}
+    ${S.settings.driveUrl && !S.settings.backupPass?`<button class="banner press" style="width:100%;text-align:left;background:var(--accentSoft)" data-action="finishBackup"><span class="dot" style="background:var(--accent);box-shadow:none"></span><span style="flex:1">Automatic Google Drive backup is ready. <b style="color:var(--accent)">Choose a backup password to turn it on</b></span></button>`:''}
     ${!S.sessions.length?`<button class="banner press" style="width:100%;text-align:left;background:var(--goodSoft)" data-action="pasteImport"><span class="dot" style="background:var(--good);box-shadow:none"></span><span style="flex:1">Got a link from Claude with your sessions? <b style="color:var(--good)">Paste my sessions</b></span></button>`:''}
     ${hero}
     <div class="card tight"><div class="lbl" style="margin-bottom:10px">How are you feeling right now?</div>
@@ -890,7 +891,7 @@ function importSessions(j){
   const union = (a,b) => [...new Set([...(a||[]), ...(b||[])])];
   if (ps.reminders) st.reminders = union(st.reminders, ps.reminders);
   if (ps.habits) st.habits = union(ps.habits, st.habits.filter(h=>!['Walk','Meditation','Exercise'].includes(h) || ps.habits.includes(h)));
-  ['keyHabit','keyHabitNote','hardMonthNote','intervalDays'].forEach(k=>{ if (ps[k]!==undefined) st[k]=ps[k]; });
+  ['keyHabit','keyHabitNote','hardMonthNote','intervalDays','driveUrl','driveToken'].forEach(k=>{ if (ps[k]!==undefined) st[k]=ps[k]; });
   if (ps.hardMonths) st.hardMonths = union(st.hardMonths, ps.hardMonths);
   if (ps.upcoming) st.upcoming = union(st.upcoming, ps.upcoming).sort();
   if (ps.nextSession && (!st.nextSession || new Date(st.nextSession) < new Date() || new Date(ps.nextSession) < new Date(st.nextSession))) st.nextSession = ps.nextSession;
@@ -1058,6 +1059,7 @@ document.addEventListener('click', async e=>{
     case 'faceid': saveSettingsFields(); save(); if (S.settings.faceId){ S.settings.faceId=''; save(); openSettings(); toast('Face ID unlock off'); } else setupFaceId(); break;
     case 'changeBackupPass': saveSettingsFields(); save(); askBackupPass(()=>openSettings()); break;
     case 'pasteImport': pasteImport(); break;
+    case 'finishBackup': askBackupPass(()=>{ driveBackup(true).then(render); }); break;
     case 'coachNext': coachShift++; haptic(); render(); break;
     case 'habit': { const k=dayKey(new Date()); const arr=S.habitLog[k]=S.habitLog[k]||[]; const v=b.dataset.v; const i=arr.indexOf(v); i>=0?arr.splice(i,1):arr.push(v); save(); haptic(); render(); if (i<0) toast('Nice. Small steps count.'); break; }
     case 'remAdd': saveSettingsFields(); save(); promptSheet('Add a reminder', 'e.g. Stay with the facts', v=>{ S.settings.reminders.push(v); save(); openSettings(); }); break;

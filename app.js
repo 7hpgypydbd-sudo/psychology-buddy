@@ -1,7 +1,7 @@
 /* Psychology Buddy: a companion for fortnightly psychology sessions.
    Everything is saved on this phone only (localStorage). Optional AI uses the person's own Claude API key. */
 'use strict';
-const BUILD = 9;
+const BUILD = 10;
 const KEY = 'psybuddy.v1';
 
 /* ---------- tag vocab ---------- */

@@ -21,7 +21,7 @@ const OUTCOMES = ['Helpful','Feel better about it','Need more time','Revisit nex
 /* ---------- state ---------- */
 const DEFAULT_STATE = () => ({
   version:1,
-  settings:{theme:'auto', nextSession:'', intervalDays:14, remindDays:2, apiKey:'', pin:'', faceId:'', backupPass:'', lastBackup:'', customTags:{triggers:[], people:[]}},
+  settings:{theme:'auto', nextSession:'', intervalDays:14, remindDays:2, apiKey:'', pin:'', faceId:'', backupPass:'', lastBackup:'', driveUrl:'', driveToken:'', lastAuto:'', lastAutoErr:'', dirty:false, customTags:{triggers:[], people:[]}},
   sessions:[], todos:[], notes:[], prep:null, talkSkip:[]
 });
 let S = load();
@@ -36,7 +36,7 @@ function deepMerge(base, add){
   }
   return base;
 }
-function save(){ try { localStorage.setItem(KEY, JSON.stringify(S)); } catch(e){ toast('Couldn’t save. Storage may be full.'); } }
+function save(){ S.settings.dirty = true; try { localStorage.setItem(KEY, JSON.stringify(S)); } catch(e){ toast('Couldn’t save. Storage may be full.'); } }
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,7);
 
 /* ---------- helpers ---------- */
@@ -103,7 +103,7 @@ function reminderText(){
   if (raise) bits.push(plural(raise,'note')+' to bring up');
   return when + (bits.length ? ' · ' + bits.join(', ') : ' · you’re all set');
 }
-function backupDue(){ return (S.notes.length + S.sessions.length) >= 3 && (!S.settings.lastBackup || Date.now()-new Date(S.settings.lastBackup) > 7*DAY); }
+function backupDue(){ if (S.settings.driveUrl && !S.settings.lastAutoErr) return false; return (S.notes.length + S.sessions.length) >= 3 && (!S.settings.lastBackup || Date.now()-new Date(S.settings.lastBackup) > 7*DAY); }
 function coachLine(){
   const ls = lastSession(); if (!ls) return null;
   const pool = [];
@@ -141,7 +141,7 @@ function renderHome(){
     <div class="top"><div><div class="sub">${esc(fmtDate(new Date(),{weekday:'long', day:'numeric', month:'long'}))}</div><h1>${greeting()}</h1></div>
       <button class="iconbtn" data-action="settings" aria-label="Settings">${ICON.gear}</button></div>
     ${rem?`<div class="banner"><span class="dot"></span><span>${esc(rem)}</span></div>`:''}
-    ${backupDue()?`<button class="banner press" style="width:100%;text-align:left;background:var(--accentSoft)" data-action="backupNow"><span class="dot" style="background:var(--accent);box-shadow:none"></span><span style="flex:1">${S.settings.lastBackup?'It’s been a week since your last backup.':'Keep your notes safe: save your first backup.'} <b style="color:var(--accent)">Back up now</b></span></button>`:''}
+    ${backupDue()?`<button class="banner press" style="width:100%;text-align:left;background:var(--accentSoft)" data-action="backupNow"><span class="dot" style="background:var(--accent);box-shadow:none"></span><span style="flex:1">${S.settings.lastAutoErr?'Automatic backup isn\u2019t working right now.':S.settings.lastBackup?'It\u2019s been a week since your last backup.':'Keep your notes safe: turn on automatic backup.'} <b style="color:var(--accent)">Back up now</b></span></button>`:''}
     ${hero}
     <div class="card tight"><div class="lbl" style="margin-bottom:10px">How are you feeling right now?</div>
       <div class="moods">${MOODS.map(m=>`<button class="mood" data-action="quickMood" data-v="${m.v}"><span class="e">${m.e}</span><span class="w">${m.w}</span></button>`).join('')}</div></div>
@@ -623,7 +623,10 @@ function openSettings(){
       <div class="btnrow" style="margin-top:10px"><button class="btn soft" data-action="testKey">Test key</button>${s.apiKey?'<button class="btn ghost" data-action="clearKey">Remove</button>':''}</div>
       <div class="small muted" style="margin-top:8px">Get one at <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a>.</div></div>
     <div class="section"><div class="lbl">Backup</div><div class="small muted" style="margin-bottom:10px">${lb} Everything lives only on this phone, so keep a backup. Backups are locked with your backup password${s.backupPass?'':' (you’ll choose one first)'}. Pick Google Drive or Files from the share menu.</div>
-      <div class="btnrow"><button class="btn soft" data-action="export">Save backup</button><button class="btn ghost" data-action="import">Restore</button></div>
+      <div class="theme" style="margin-bottom:12px"><div class="row"><div><div style="font-weight:800">Automatic Google Drive backup</div><div class="small muted">${s.driveUrl?(s.lastAutoErr?'Last try failed: '+esc(s.lastAutoErr):s.lastAuto?'On \u00b7 last saved '+esc(fmtDate(s.lastAuto))+' '+esc(fmtTime(s.lastAuto)):'On'):'Off'}</div></div>
+        <button class="chip ${s.driveUrl?'on':''}" data-action="driveSetup">${s.driveUrl?'On':'Set up'}</button></div>
+        ${s.driveUrl?'<button class="small" style="color:var(--accent);font-weight:800;margin-top:8px" data-action="driveNow">Back up now</button>':''}</div>
+      <div class="btnrow"><button class="btn soft" data-action="export">Save backup file</button><button class="btn ghost" data-action="import">Restore</button></div>
       ${s.backupPass?'<button class="small" style="color:var(--accent);font-weight:800;margin-top:10px" data-action="changeBackupPass">Change backup password</button>':''}</div>
     <div class="section"><div class="lbl">Lock</div>
       <div class="row"><div class="small muted">${s.pin?'A 4-digit code is needed to open the app.':'Ask for a 4-digit code when opening the app.'}</div>
@@ -695,6 +698,81 @@ async function exportBackup(){
   const name = 'psychology-buddy-backup-' + new Date().toISOString().slice(0,10) + '.json';
   const ok = await shareFile(name, 'application/json', JSON.stringify(enc));
   if (ok){ S.settings.lastBackup = new Date().toISOString(); save(); render(); }
+}
+/* ---------- automatic Google Drive backup (via a small Google Apps Script that Bryce owns) ---------- */
+function driveScript(token){ return `// Psychology Buddy: saves encrypted backups into your Google Drive.
+// Backups are locked on your phone before they arrive here, so this script can't read them.
+const TOKEN = '${token}';
+const FOLDER = 'Psychology Buddy backups';
+const KEEP = 30; // how many backups to keep
+
+function doPost(e) {
+  const body = JSON.parse(e.postData.contents);
+  if (body.token !== TOKEN) return ContentService.createTextOutput('wrong token');
+  const found = DriveApp.getFoldersByName(FOLDER);
+  const folder = found.hasNext() ? found.next() : DriveApp.createFolder(FOLDER);
+  const name = 'psychology-buddy-' + Utilities.formatDate(new Date(), 'Australia/Sydney', 'yyyy-MM-dd-HHmm') + '.json';
+  folder.createFile(name, JSON.stringify(body.backup), 'application/json');
+  const files = [];
+  const it = folder.getFiles();
+  while (it.hasNext()) files.push(it.next());
+  files.sort((a, b) => b.getDateCreated() - a.getDateCreated());
+  files.slice(KEEP).forEach(f => f.setTrashed(true));
+  return ContentService.createTextOutput('ok');
+}
+`; }
+async function driveBackup(manual){
+  const st = S.settings;
+  if (!st.driveUrl || !st.backupPass || !st.driveToken) return false;
+  try {
+    const backup = await encryptJSON(backupData(), st.backupPass);
+    const body = JSON.stringify({token:st.driveToken, backup});
+    let ok = false;
+    try {
+      const r = await fetch(st.driveUrl, {method:'POST', headers:{'content-type':'text/plain;charset=utf-8'}, body, redirect:'follow'});
+      const t = await r.text(); ok = r.ok && t.trim()==='ok';
+      if (!ok) throw new Error(t.trim()==='wrong token' ? 'the setup code doesn\u2019t match' : 'Google said ' + (t.slice(0,60) || r.status));
+    } catch(err){
+      if (err instanceof TypeError){ // browser blocked reading the reply; send blind
+        await fetch(st.driveUrl, {method:'POST', mode:'no-cors', headers:{'content-type':'text/plain;charset=utf-8'}, body, keepalive: body.length < 60000});
+        ok = true;
+      } else throw err;
+    }
+    st.lastAuto = st.lastBackup = new Date().toISOString(); st.lastAutoErr = ''; st.dirty = false;
+    try { localStorage.setItem(KEY, JSON.stringify(S)); } catch(e){}
+    if (manual) toast('Backed up to Google Drive \u2713');
+    return true;
+  } catch(e){
+    st.lastAutoErr = e.message || 'no connection';
+    try { localStorage.setItem(KEY, JSON.stringify(S)); } catch(x){}
+    if (manual) toast('Drive backup failed: ' + st.lastAutoErr);
+    return false;
+  }
+}
+// back up quietly when something changed: on leaving the app, and on opening it, at most every 30 minutes
+function maybeAutoBackup(){
+  const st = S.settings;
+  if (!st.driveUrl || !st.dirty || !navigator.onLine) return;
+  if (st.lastAuto && Date.now() - new Date(st.lastAuto) < 30*60e3) return;
+  driveBackup(false);
+}
+function openDriveSetup(){
+  if (!S.settings.backupPass){ askBackupPass(()=>openDriveSetup()); return; }
+  if (!S.settings.driveToken){ S.settings.driveToken = b64(crypto.getRandomValues(new Uint8Array(18))).replace(/[^A-Za-z0-9]/g,''); save(); }
+  openSheet('Automatic Drive backup', `
+    <div class="muted" style="margin:0 2px 14px">A one-time setup, about 5 minutes. You\u2019re making a tiny helper in your own Google account that saves locked backups into a Drive folder called \u201cPsychology Buddy backups\u201d. Easiest on a computer, but a phone works too.</div>
+    <div class="section"><div class="lbl">1. Copy the helper code</div><button class="btn soft" data-action="copyScript">Copy code</button></div>
+    <div class="section"><div class="lbl">2. Make the helper</div>
+      <ul class="clean small"><li>Open <a href="https://script.google.com/create" target="_blank" rel="noopener">script.google.com/create</a> (signed in to your Google account).</li>
+      <li>Select all the sample code, delete it, and paste.</li>
+      <li>Press <b>Deploy</b> \u2192 <b>New deployment</b>. Tap the gear, pick <b>Web app</b>.</li>
+      <li>Execute as: <b>Me</b>. Who has access: <b>Anyone</b>. Press <b>Deploy</b>.</li>
+      <li>Allow access when Google asks (it may say \u201cunverified app\u201d: tap Advanced, then Go to project, as it\u2019s your own).</li>
+      <li>Copy the <b>Web app URL</b>.</li></ul></div>
+    <div class="section"><div class="lbl">3. Paste the URL here</div><input type="text" id="driveUrl" placeholder="https://script.google.com/macros/s/\u2026/exec" value="${esc(S.settings.driveUrl)}">
+      <button class="btn" style="margin-top:10px" data-action="driveConnect">Connect and back up now</button></div>
+    <div class="small muted">\u201cAnyone\u201d only means your phone can send to it without signing in. Each backup is locked with your backup password before it leaves the phone, and the helper rejects anything without your private code.</div>
+    ${S.settings.driveUrl?'<div style="height:12px"></div><button class="btn danger" data-action="driveOff">Turn off automatic backup</button>':''}`);
 }
 function askBackupPass(then){
   openSheet('Backup password', `<div class="muted" style="margin:0 2px 14px">Your backups are locked with this password, so nobody can read them, even in Google Drive. Write it down somewhere safe: without it a backup can’t be opened.</div>
@@ -793,7 +871,7 @@ function pinPress(k){
   }, 150);
 }
 document.addEventListener('visibilitychange', ()=>{
-  if (document.hidden) hiddenAt = Date.now();
+  if (document.hidden){ hiddenAt = Date.now(); maybeAutoBackup(); }
   else { if (S.settings.pin && hiddenAt && Date.now()-hiddenAt > 2*60e3) showLock('unlock'); render(); }
 });
 
@@ -878,7 +956,12 @@ document.addEventListener('click', async e=>{
     case 'pin': saveSettingsFields(); save(); if (S.settings.pin){ S.settings.pin=''; S.settings.faceId=''; save(); openSettings(); toast('Code removed'); } else { closeSheet(); showLock('set1'); } break;
     case 'faceid': saveSettingsFields(); save(); if (S.settings.faceId){ S.settings.faceId=''; save(); openSettings(); toast('Face ID unlock off'); } else setupFaceId(); break;
     case 'changeBackupPass': saveSettingsFields(); save(); askBackupPass(()=>openSettings()); break;
-    case 'backupNow': exportBackup(); break;
+    case 'backupNow': S.settings.driveUrl ? driveBackup(true).then(render) : (S.settings.lastBackup ? exportBackup() : openDriveSetup()); break;
+    case 'driveSetup': saveSettingsFields(); save(); openDriveSetup(); break;
+    case 'driveNow': driveBackup(true).then(()=>openSettings()); break;
+    case 'copyScript': try { await navigator.clipboard.writeText(driveScript(S.settings.driveToken)); toast('Code copied'); } catch(err){ openSheet('Copy this code', `<textarea class="big" style="font-family:monospace;font-size:12px" readonly>${esc(driveScript(S.settings.driveToken))}</textarea><div class="small muted" style="margin-top:8px">Tap and hold, Select All, Copy.</div>`); } break;
+    case 'driveConnect': { const u=$('#driveUrl').value.trim(); if (!/^https:\/\/script\.google(usercontent)?\.com\//.test(u)) return toast('That doesn\u2019t look like the Web app URL'); S.settings.driveUrl=u; save(); b.disabled=true; b.innerHTML='<span class="spinner"></span> Backing up\u2026'; const ok = await driveBackup(true); if (ok) openSettings(); else { b.disabled=false; b.textContent='Try again'; } break; }
+    case 'driveOff': S.settings.driveUrl=''; S.settings.lastAutoErr=''; save(); openSettings(); toast('Automatic backup off'); break;
     case 'saveSettings': saveSettingsFields(); save(); closeSheet(); render(); break;
     case 'wipe': confirmSheet('Erase everything?', 'All notes, sessions and to-dos on this phone will be deleted. Save a backup first if you might want them.', 'Erase everything', ()=>{ localStorage.removeItem(KEY); S=DEFAULT_STATE(); applyTheme(); closeSheet(); go('home'); toast('Everything erased'); }); break;
   }
@@ -896,4 +979,6 @@ $('#importFile').addEventListener('change', e=>{ const f=e.target.files[0]; if (
 applyTheme();
 render();
 if (S.settings.pin) showLock('unlock');
+setTimeout(maybeAutoBackup, 4000);
+window.addEventListener('online', maybeAutoBackup);
 if ('serviceWorker' in navigator && location.protocol==='https:') navigator.serviceWorker.register('sw.js').catch(()=>{});
